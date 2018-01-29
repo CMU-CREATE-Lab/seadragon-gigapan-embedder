@@ -1,0 +1,327 @@
+<!DOCTYPE HTML>
+<html>
+
+<head>
+  <title>Gigapan Embedder</title>
+  <style type="text/css">
+    html,
+    body {
+      margin: 0;
+    }
+    #gigapan_viewer {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      background-color: black;
+    }
+    #message {
+      left: calc(50% - 125px);
+      position: fixed;
+      top: 20px;
+      width: 251px;
+      display: none;
+    }
+    .warning {
+      border: 1px solid;
+      padding: 15px 10px 15px 70px;
+      background-repeat: no-repeat;
+      background-position: 20px center;
+      color: #9F6000;
+      background-color: #FEEFB3;
+      background-image: url('images/alert.png');
+    }
+  </style>
+
+  <script language="JavaScript" type="text/javascript" src="lib/jquery/jquery-1.12.4.min.js"></script>
+  <script language="JavaScript" type="text/javascript" src="lib/seadragon/seadragon-min.js"></script>
+  <script language="JavaScript" type="text/javascript" src="src/js/org/gigapan/seadragon/GigapanTileSource.js"></script>
+  <script language="JavaScript" type="text/javascript" src="src/js/org/gigapan/GigapanUtils.js"></script>
+  <script language="JavaScript" type="text/javascript" src="src/js/org/gigapan/seadragon/SeadragonUtils.js"></script>
+  <script language="JavaScript" type="text/javascript" src="lib/commons-javascript/org/cmucreatelab/events/EventManager.js"></script>
+  <script language="JavaScript" type="text/javascript" src="lib/multitouch/org/cmucreatelab/util/Point.js"></script>
+  <script language="JavaScript" type="text/javascript" src="lib/multitouch/org/cmucreatelab/multitouch/Touch.js"></script>
+  <script language="JavaScript" type="text/javascript" src="lib/multitouch/org/cmucreatelab/multitouch/TouchManager.js"></script>
+  <script language="JavaScript" type="text/javascript">
+    var SeadragonUtils = org.gigapan.seadragon.SeadragonUtils;
+    var touchManager = new org.cmucreatelab.multitouch.TouchManager();
+    var pinchMidpoint = null;
+    var haveViewerEventListenersBeenAdded = false;
+    var fullScreen = false;
+    var originalViewerContainerSize;
+    var screenDimensionsAsPoint;
+    var fullScreenChangeFromUserClick;
+    var touchStartTime = 0;
+    var touchStartX = 0;
+    var touchStartY = 0;
+
+    var viewer = null;
+    var gigapan = {
+      "id": Seadragon.Utils.getUrlParameter("gigapanId"),
+      "authKey": Seadragon.Utils.getUrlParameter("authKey"),
+      "width": "",
+      "height": ""
+    };
+
+    // Clean up gigapan params in the event of trailing slashes on the URL params.
+    // Technically it is wrong to have the slashes and people should just correct
+    // the mistake, but it's already come up and I could see it happen again and again...
+    if (gigapan.id) {
+      gigapan.id = gigapan.id.replace(/\/+$/, "");
+    }
+    if (gigapan.authKey) {
+      gigapan.authKey = gigapan.authKey.replace(/\/+$/, "");
+    }
+
+
+    $(document).ready(function() {
+      if (!gigapan.id) {
+        $("#message").html("<div class='warning'><p>A gigapanId is required!</p></div>").show();
+        return;
+      }
+
+      // Register event handlers with the TouchManager
+      //touchManager.addEventListener('tap', tapEventHandler);
+      touchManager.addEventListener('pan', panEventHandler);
+      touchManager.addEventListener('pinch-start', pinchStartEventHandler);
+      touchManager.addEventListener('pinch', pinchEventHandler);
+
+      // Configure Seadragon
+      Seadragon.Config.imageLoaderLimit = 6; // max number of concurrent image downloads
+      Seadragon.Config.autoHideControls = false; // don't show Seadragon's controls
+      Seadragon.Config.imagePath = "lib/seadragon/img/";
+
+      // Create and initialize the viewer
+      viewer = new Seadragon.Viewer("gigapan_viewer");
+      viewer.addEventListener("open", handleViewerOpen);
+      viewer.setDashboardEnabled(false);
+
+      // Disable click to zoom
+      viewer.tracker.clickHandler = null;
+
+      // Get gigapan json to determin dimensions
+      $.ajax({
+        url: "http://api.gigapan.com/beta/gigapans/" + gigapan.id + ".json?callback=",
+        dataType: "jsonp",
+        contentType: 'application/json',
+        timeout: 5000,
+        success: function(data) {
+          if (data && data.id) {
+            gigapan.width = data.width;
+            gigapan.height = data.height;
+
+            // Load the gigapan
+            loadGigapan();
+            // Show the zoom controls
+            viewer.setDashboardEnabled(true);
+          }
+        },
+        error: function(e) {
+          $("#message").html("<div class='warning'><p>Invalid gigapanId or server not responding.</p></div>").show();
+        }
+      });
+    });
+
+
+    function handleFullScreen() {
+      var viewerDiv = viewer.drawer.elmt;
+      fullScreenChangeFromUserClick = true;
+
+      if (fullScreen) {
+        fullScreen = false;
+        if (document.exitFullscreen) {
+          document.exitFullscreen();
+        } else if (document.msExitFullscreen) {
+          document.msExitFullscreen();
+        } else if (document.mozCancelFullScreen) {
+          document.mozCancelFullScreen();
+        } else if (document.webkitExitFullscreen) {
+          document.webkitExitFullscreen();
+        } else if (document.webkitCancelFullScreen) {
+          document.webkitCancelFullScreen();
+        }
+        viewer.viewport.resize(originalViewerContainerSize, false);
+        $(viewer.getNavControl()).appendTo($("body"));
+      } else {
+        fullScreen = true;
+        if (viewerDiv.requestFullscreen) {
+          viewerDiv.requestFullscreen();
+        } else if (viewerDiv.msRequestFullscreen) {
+          viewerDiv.msRequestFullscreen();
+        } else if (viewerDiv.mozRequestFullScreen) {
+          viewerDiv.mozRequestFullScreen();
+        } else if (viewerDiv.webkitRequestFullScreen) {
+          viewerDiv.webkitRequestFullScreen();
+        }
+        viewer.viewport.resize(screenDimensionsAsPoint, false);
+        $(viewer.getNavControl()).appendTo(viewerDiv);
+      }
+
+      setTimeout(function() {
+        viewer.viewport.goHome();
+      }, 100);
+    }
+
+
+    function setupFullScreenIFrame() {
+      var controls = viewer.getNavControl();
+      var $fullScreenButton = $(controls).children().last();
+      $fullScreenButton.remove();
+
+      var button = new Seadragon.Button(
+        "Toggle full page",
+        "lib/seadragon/img/fullpage_rest.png",
+        "lib/seadragon/img/fullpage_grouphover.png",
+        "lib/seadragon/img/fullpage_hover.png",
+        "lib/seadragon/img/fullpage_pressed.png",
+        null, // do nothing on initial press
+        handleFullScreen, // go home on release
+        null, // no need to use click thresholds
+        null, // do nothing on enter
+        null // do nothing on exit
+      );
+
+      var $controls = $(controls);
+      // Ensure controls are still visible in full screen.
+      $controls.css({
+        "z-index": "2147483647",
+        "bottom": "0px",
+        "right": "0px",
+        "position": "absolute"
+      });
+
+      $(button.elmt).appendTo($controls);
+      $(viewer.getNavControl()).appendTo(viewer.drawer.elmt);
+      //viewer.addControl(button.elmt, Seadragon.ControlAnchor.BOTTOM_RIGHT);
+
+      $(document).on('webkitfullscreenchange mozfullscreenchange fullscreenchange MSFullscreenChange', function(e) {
+        if (!fullScreenChangeFromUserClick) {
+          handleFullScreen();
+        }
+        fullScreenChangeFromUserClick = false;
+      });
+    }
+
+
+    function loadGigapan() {
+      // Clear the viewer
+      viewer.close();
+      window.setTimeout(function() {
+        // Create the tile source
+        var tileSource = new org.gigapan.seadragon.GigapanTileSource(
+          org.gigapan.GigapanUtils.createTileSourceUrlPrefixForGigapan(gigapan['id'], gigapan['authKey']),
+          gigapan['width'],
+          gigapan['height']
+        );
+
+        // Tell the viewer to open the tile source
+        viewer.openTileSource(tileSource);
+      }, 1);
+    }
+
+
+    function handleViewerOpen(viewer) {
+      if (haveViewerEventListenersBeenAdded) {
+        return;
+      }
+
+      haveViewerEventListenersBeenAdded = true;
+      var touchSensitiveElement = viewer.drawer.elmt;
+
+      // Handle double tap
+      $(touchSensitiveElement).on('touchstart', function(event) {
+        if (event.originalEvent.touches.length == 1) {
+          var newTouchStartX = event.originalEvent.touches[0].pageX;
+          var newTouchStartY = event.originalEvent.touches[0].pageY;
+
+          var newTouchStartTime = new Date().getTime();
+
+          if (newTouchStartTime - touchStartTime < 350) {
+            if (Math.abs(newTouchStartX - touchStartX) <= 30 && Math.abs(newTouchStartY - touchStartY) <= 30) {
+              var point = new Seadragon.Point(touchStartX, touchStartY);
+              var clickMidpoint = SeadragonUtils.convertPageCoordsToSeadragonCoords(point, viewer);
+              viewer.viewport.zoomBy(2, clickMidpoint);
+            }
+          }
+          touchStartTime = newTouchStartTime;
+          touchStartX = newTouchStartX;
+          touchStartY = newTouchStartY;
+        }
+      });
+
+      Seadragon.Utils.addEvent(touchSensitiveElement, "touchstart", touchManager.onTouchStart);
+      Seadragon.Utils.addEvent(touchSensitiveElement, "touchmove", touchManager.onTouchMove);
+      Seadragon.Utils.addEvent(touchSensitiveElement, "touchend", touchManager.onTouchEndOrCancel);
+      Seadragon.Utils.addEvent(touchSensitiveElement, "touchcancel", touchManager.onTouchEndOrCancel);
+      Seadragon.Utils.addEvent(touchSensitiveElement, "dblclick", doubleClickEventHandler);
+
+      originalViewerContainerSize = viewer.viewport.getContainerSize();
+      screenDimensionsAsPoint = new Seadragon.Point(screen.width, screen.height);
+
+      // Handle full screen for iframes
+      if (window.top !== window.self) {
+        setupFullScreenIFrame();
+      }
+    }
+
+
+    function doubleClickEventHandler(event) {
+      var point = new Seadragon.Point(event.clientX, event.clientY);
+      var clickMidpoint = SeadragonUtils.convertPageCoordsToSeadragonCoords(point, viewer);
+      var direction = event.shiftKey ? 0.5 : 2;
+      viewer.viewport.zoomBy(direction, clickMidpoint);
+    }
+
+
+    function tapEventHandler(touchPoint, elapsedTouchTime, event) {
+      if (viewer.isOpen() && viewer.viewport) {
+        var seadragonTouchPoint = touchPoint.toSeadragonPoint();
+        var viewerPositionInPixelCoords = Seadragon.Utils.getElementPosition(viewer.elmt);
+        var touchPositionInPixelCoords = seadragonTouchPoint.minus(viewerPositionInPixelCoords);
+        var touchPointInSeadragonCoords = SeadragonUtils.convertPageCoordsToSeadragonCoords(touchPositionInPixelCoords, viewer);
+      }
+    }
+
+
+    function panEventHandler(pixelDeltaFromPrevious, event) {
+      if (viewer.isOpen() && viewer.viewport) {
+        var panBy = viewer.viewport.deltaPointsFromPixels(pixelDeltaFromPrevious);
+        viewer.viewport.panBy(panBy);
+      }
+    }
+
+
+    function pinchStartEventHandler(touch1, touch2, midpoint, event) {
+      if (viewer.isOpen() && viewer.viewport && midpoint != null) {
+        // Record the current midpoint in Seadragon coords so all future pinch events during this
+        // pinch will zoom about this point
+        pinchMidpoint = SeadragonUtils.convertPageCoordsToSeadragonCoords(midpoint.toSeadragonPoint(), viewer);
+      }
+    }
+
+
+    function pinchEventHandler(scaleDeltaX, scaleDeltaY, scaleDeltaXY, touch1, touch2, event) {
+      // Clamp the zoom scale delta to within [0.8, 1.2]
+      scaleDeltaXY = Math.max(0.8, Math.min(1.2, scaleDeltaXY));
+      if (viewer.isOpen() && viewer.viewport && pinchMidpoint != null) {
+        viewer.viewport.zoomBy(scaleDeltaXY, pinchMidpoint);
+        // Clamp the zoom level to [viewer.viewport.getMinZoom(), viewer.viewport.getMaxZoom()]
+        if (viewer.viewport.getZoom() > viewer.viewport.getMaxZoom()) {
+          viewer.viewport.zoomTo(viewer.viewport.getMaxZoom(), pinchMidpoint);
+        } else if (viewer.viewport.getZoom() < viewer.viewport.getMinZoom()) {
+          viewer.viewport.zoomTo(viewer.viewport.getMinZoom(), pinchMidpoint);
+        }
+      }
+    }
+  </script>
+</head>
+
+<body>
+  <div id="gigapan_viewer"></div>
+  <div id="message"></div>
+</body>
+</html>
